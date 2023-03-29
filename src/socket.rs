@@ -8,6 +8,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
+use tracing::error;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -241,7 +242,7 @@ where
     M: Into<RawMessage>,
     S: StreamExt<Item = Result<M, Error>> + Unpin,
 {
-    async fn run(&mut self) -> Result<(), Error> {
+    async fn run(mut self) {
         while let Some(result) = self.stream.next().await {
             let result = result.map(M::into);
             tracing::trace!("received message: {:?}", result);
@@ -262,13 +263,15 @@ where
                         tracing::trace!("latency: {}ms", latency.as_millis());
                         continue;
                     }
-                    RawMessage::Close(_) => return Ok(()),
+                    RawMessage::Close(_) => return,
                 }),
                 Err(err) => Err(err), // maybe early return here?
             };
-            self.sender.send(message).unwrap();
+            if self.sender.send(message).is_err() {
+                error!("Socket already closed")
+            };
         }
-        Ok(())
+
     }
 }
 
@@ -281,18 +284,18 @@ impl Stream {
     fn new<M, S>(
         stream: S,
         last_alive: Arc<Mutex<Instant>>,
-    ) -> (tokio::task::JoinHandle<Result<(), Error>>, Self)
+    ) -> (tokio::task::JoinHandle<()>, Self)
     where
         M: Into<RawMessage> + std::fmt::Debug + Send + 'static,
         S: StreamExt<Item = Result<M, Error>> + Unpin + Send + 'static,
     {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let mut actor = StreamActor {
+        let actor = StreamActor {
             sender,
             stream,
             last_alive,
         };
-        let future = tokio::spawn(async move { actor.run().await });
+        let future = tokio::spawn(actor.run());
         (future, Self { receiver })
     }
 
