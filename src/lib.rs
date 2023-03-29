@@ -14,6 +14,7 @@ pub use socket::RawMessage;
 pub use socket::Sink;
 pub use socket::Socket;
 pub use socket::Stream;
+pub use socket::Config as SocketConfig;
 
 #[cfg(feature = "axum")]
 pub mod axum;
