@@ -1,3 +1,4 @@
+use std::fmt::Formatter;
 use std::sync::Arc;
 
 use crate::CloseFrame;
@@ -14,7 +15,7 @@ pub trait SessionExt: Send {
     /// Custom identification number of SessionExt, usually a number or a string.
     type ID: Send + Sync + Clone + std::fmt::Debug + std::fmt::Display;
     /// Type the custom call - parameters passed to `on_call`.
-    type Call: std::fmt::Debug + Send;
+    type Call: Send;
 
     /// Returns ID of the session.
     fn id(&self) -> &Self::ID;
@@ -29,15 +30,22 @@ pub trait SessionExt: Send {
 
 type CloseReceiver = oneshot::Receiver<Result<Option<CloseFrame>, Error>>;
 
-#[derive(Debug)]
-pub struct Session<I: std::fmt::Display + Clone, C: std::fmt::Debug> {
+pub struct Session<I, C> {
     pub id: I,
     socket: mpsc::UnboundedSender<Message>,
     calls: mpsc::UnboundedSender<C>,
     closed: Arc<Mutex<Option<CloseReceiver>>>,
 }
 
-impl<I: std::fmt::Display + Clone, C: std::fmt::Debug> std::clone::Clone for Session<I, C> {
+impl<I: std::fmt::Debug, C> std::fmt::Debug for Session<I, C> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<I: Clone, C> Clone for Session<I, C> {
     fn clone(&self) -> Self {
         Self {
             id: self.id.clone(),
@@ -48,8 +56,8 @@ impl<I: std::fmt::Display + Clone, C: std::fmt::Debug> std::clone::Clone for Ses
     }
 }
 
-impl<I: std::fmt::Display + Clone + Send, C: std::fmt::Debug + Send> Session<I, C> {
-    pub fn create<S: SessionExt<ID = I, Call = C> + 'static>(
+impl<I: std::fmt::Display + Clone + Send, C: Send> Session<I, C> {
+    pub fn create<S: SessionExt<ID=I, Call=C> + 'static>(
         session_fn: impl FnOnce(Session<I, C>) -> S,
         session_id: I,
         socket: Socket,
@@ -76,7 +84,7 @@ impl<I: std::fmt::Display + Clone + Send, C: std::fmt::Debug + Send> Session<I, 
     }
 }
 
-impl<I: std::fmt::Display + Clone, C: std::fmt::Debug> Session<I, C> {
+impl<I: std::fmt::Display + Clone, C> Session<I, C> {
     #[doc(hidden)]
     /// WARN: Use only if really nessesary.
     ///
@@ -124,7 +132,7 @@ impl<I: std::fmt::Display + Clone, C: std::fmt::Debug> Session<I, C> {
         let (sender, receiver) = oneshot::channel();
         let call = f(sender);
 
-        self.calls.send(call).unwrap();
+        self.calls.send(call).map_err(|_| ()).unwrap();
         receiver.await.unwrap()
     }
 }
