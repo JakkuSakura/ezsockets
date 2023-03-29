@@ -8,6 +8,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tracing::error;
 
 #[derive(Debug, Clone)]
@@ -254,13 +255,17 @@ where
                     RawMessage::Ping(_bytes) => continue,
                     RawMessage::Pong(bytes) => {
                         *self.last_alive.lock().await = Instant::now();
-                        let bytes: [u8; 16] = bytes.try_into().unwrap(); // TODO: handle invalid byte frame
-                        let timestamp = u128::from_be_bytes(bytes);
-                        let timestamp = Duration::from_millis(timestamp as u64); // TODO: handle overflow
-                        let latency = SystemTime::now()
-                            .duration_since(UNIX_EPOCH + timestamp)
-                            .unwrap();
-                        tracing::trace!("latency: {}ms", latency.as_millis());
+                        if let Ok(bytes) = bytes.try_into() {
+                            let bytes: [u8; 16] = bytes;
+                            let timestamp = u128::from_be_bytes(bytes);
+                            let timestamp = Duration::from_millis(timestamp as u64); // TODO: handle overflow
+                            let latency = SystemTime::now()
+                                .duration_since(UNIX_EPOCH + timestamp)
+                                .unwrap();
+                            // TODO: handle time zone
+                            tracing::trace!("latency: {}ms", latency.as_millis());
+                        }
+
                         continue;
                     }
                     RawMessage::Close(_) => return,
@@ -268,7 +273,8 @@ where
                 Err(err) => Err(err), // maybe early return here?
             };
             if self.sender.send(message).is_err() {
-                error!("Socket already closed")
+                error!("Socket already closed");
+                break
             };
         }
 
@@ -284,7 +290,7 @@ impl Stream {
     fn new<M, S>(
         stream: S,
         last_alive: Arc<Mutex<Instant>>,
-    ) -> (tokio::task::JoinHandle<()>, Self)
+    ) -> (JoinHandle<()>, Self)
     where
         M: Into<RawMessage> + std::fmt::Debug + Send + 'static,
         S: StreamExt<Item = Result<M, Error>> + Unpin + Send + 'static,
@@ -296,6 +302,7 @@ impl Stream {
             last_alive,
         };
         let future = tokio::spawn(actor.run());
+
         (future, Self { receiver })
     }
 
@@ -350,10 +357,10 @@ impl Socket {
         });
 
         tokio::spawn(async move {
-            let result = stream_future.await.unwrap();
+            stream_future.await.unwrap();
             sink_future.abort();
             heartbeat_future.abort();
-            result
+
         });
 
         Self { sink, stream, request: Default::default() }

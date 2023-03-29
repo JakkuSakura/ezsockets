@@ -91,11 +91,10 @@ use crate::Session;
 use crate::SessionExt;
 use crate::Socket;
 use async_trait::async_trait;
-use futures::FutureExt;
 use std::net::SocketAddr;
-use futures::future::RemoteHandle;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tracing::error;
 
 struct NewConnection<E: ServerExt> {
@@ -205,7 +204,7 @@ impl<E: ServerExt> From<Server<E>> for mpsc::UnboundedSender<E::Call> {
 impl<E: ServerExt + 'static> Server<E> {
     pub fn create(
         create: impl FnOnce(Self) -> E,
-    ) -> (Self, RemoteHandle<()>) {
+    ) -> (Self, JoinHandle<()>) {
         let (connection_sender, connection_receiver) = mpsc::unbounded_channel();
         let (disconnection_sender, disconnection_receiver) = mpsc::unbounded_channel();
         let (call_sender, call_receiver) = mpsc::unbounded_channel();
@@ -222,8 +221,8 @@ impl<E: ServerExt + 'static> Server<E> {
             extension,
             server: handle.clone(),
         };
-        let (remote, future) = actor.run().remote_handle();
-        tokio::spawn(remote);
+        let future = tokio::spawn(actor.run());
+
         (handle, future)
     }
 }
@@ -242,7 +241,7 @@ impl<E: ServerExt> Server<E> {
                 address,
                 respond_to: sender,
             })
-            .map_err(|_| ())
+            .map_err(|_| "connections is down")
             .unwrap();
         receiver.await.unwrap()
     }
