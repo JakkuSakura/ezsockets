@@ -154,7 +154,7 @@ cfg_if::cfg_if! {
         }
 
         impl Acceptor {
-            async fn accept(&self, stream: TcpStream) -> Result<Socket, Error> {
+            async fn accept(&self, stream: TcpStream, config: socket::Config) -> Result<Socket, Error> {
                  let mut req0 = None;
                  let callback = |req: &http::Request<()>, resp: http::Response<()>| -> Result<http::Response<()>, ErrorResponse> {
                     let mut req1 = http::Request::builder()
@@ -171,19 +171,19 @@ cfg_if::cfg_if! {
                 let mut socket = match self {
                     Acceptor::Plain => {
                         let socket = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
-                        Socket::new(socket, socket::Config::default())
+                        Socket::new(socket, config)
                     }
                     #[cfg(feature = "native-tls")]
                     Acceptor::NativeTls(acceptor) => {
                         let tls_stream = acceptor.accept(stream).await?;
                         let socket = tokio_tungstenite::accept_hdr_async(tls_stream, callback).await?;
-                        Socket::new(socket, socket::Config::default())
+                        Socket::new(socket, config)
                     }
                     #[cfg(feature = "rustls")]
                     Acceptor::Rustls(acceptor) => {
                         let tls_stream = acceptor.accept(stream).await?;
                         let socket = tokio_tungstenite::accept_hdr_async(tls_stream, callback).await?;
-                        Socket::new(socket, socket::Config::default())
+                        Socket::new(socket, config)
                     }
                 };
                 socket.request = req0.unwrap();
@@ -195,6 +195,7 @@ cfg_if::cfg_if! {
             server: Server<E>,
             listener: TcpListener,
             acceptor: Acceptor,
+            config: socket::Config
         ) -> Result<(), Error>
         where
             E: ServerExt + 'static
@@ -208,7 +209,7 @@ cfg_if::cfg_if! {
                         continue;
                     },
                 };
-                let socket = match acceptor.accept(stream).await {
+                let socket = match acceptor.accept(stream, config.clone()).await {
                     Ok(socket) => socket,
                     Err(err) => {
                         tracing::error!(%address, "failed to accept websocket connection: {:?}", err);
@@ -229,7 +230,20 @@ cfg_if::cfg_if! {
             A: ToSocketAddrs,
         {
             let listener = TcpListener::bind(address).await?;
-            run_acceptor(server, listener, Acceptor::Plain).await
+            run_acceptor(server, listener, Acceptor::Plain, Default::default()).await
+        }
+        // Run the server
+        pub async fn run_with_config<E, A>(
+            server: Server<E>,
+            address: A,
+            config: socket::Config
+        ) -> Result<(), Error>
+        where
+            E: ServerExt + 'static,
+            A: ToSocketAddrs,
+        {
+            let listener = TcpListener::bind(address).await?;
+            run_acceptor(server, listener, Acceptor::Plain, config).await
         }
 
         /// Run the server on custom `Listener` and `Acceptor`
@@ -242,7 +256,18 @@ cfg_if::cfg_if! {
         where
             E: ServerExt + 'static
         {
-            run_acceptor(server, listener, acceptor).await
+            run_acceptor(server, listener, acceptor, Default::default()).await
+        }
+        pub async fn run_on_with_config<E>(
+            server: Server<E>,
+            listener: TcpListener,
+            acceptor: Acceptor,
+            config: socket::Config
+        ) -> Result<(), Error>
+        where
+            E: ServerExt + 'static
+        {
+            run_acceptor(server, listener, acceptor, config).await
         }
     }
 }
