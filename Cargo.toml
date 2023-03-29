@@ -26,6 +26,7 @@ axum_crate = { package = "axum", version = "0.6.1", features = ["ws"], optional 
 tokio-tungstenite = { version = "0.18.0", optional = true }
 tokio-rustls = { version = "0.23.4", optional = true }
 tokio-native-tls = { version = "0.3.1", optional = true }
+eyre = "0.6.8"
 
 [features]
 default = ["client", "server"]
