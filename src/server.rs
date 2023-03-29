@@ -145,7 +145,7 @@ where
                             tracing::info!(%id, ?code, %reason, "connection closed")
                         }
                         Ok(None) => tracing::info!(%id, "connection closed"),
-                        Err(err) => tracing::warn!(%id, "connection closed due to: {err}"),
+                        Err(err) => tracing::warn!(%id, "connection closed due to: {err:?}"),
                     };
                 }
                 Some(call) = self.calls.recv() => {
