@@ -47,7 +47,6 @@
 //! // Create our own server that implements `ServerExt`
 //!
 //! use ezsockets::Server;
-//! use ezsockets::Socket;
 //! use std::net::SocketAddr;
 //!
 //! struct EchoServer {}
@@ -59,7 +58,8 @@
 //!
 //!     async fn on_connect(
 //!         &mut self,
-//!         socket: Socket,
+//!         socket: ezsockets::Socket,
+//!         request: ezsockets::Request,
 //!         address: SocketAddr,
 //!     ) -> Result<Session, ezsockets::Error> {
 //!         let id = address.port();
@@ -87,6 +87,7 @@
 
 use crate::CloseFrame;
 use crate::Error;
+use crate::Request;
 use crate::Session;
 use crate::SessionExt;
 use crate::Socket;
@@ -95,11 +96,11 @@ use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::error;
 
 struct NewConnection<E: ServerExt> {
     socket: Socket,
     address: SocketAddr,
+    request: Request,
     respond_to: oneshot::Sender<<E::Session as SessionExt>::ID>,
 }
 
@@ -111,33 +112,31 @@ struct Disconnected<E: ServerExt> {
 struct ServerActor<E: ServerExt> {
     connections: mpsc::UnboundedReceiver<NewConnection<E>>,
     disconnections: mpsc::UnboundedReceiver<Disconnected<E>>,
+    disconnections_tx: mpsc::UnboundedSender<Disconnected<E>>,
     calls: mpsc::UnboundedReceiver<E::Call>,
-    server: Server<E>,
     extension: E,
 }
 
 impl<E: ServerExt> ServerActor<E>
-    where
-        E: Send + 'static,
-        <E::Session as SessionExt>::ID: Send,
+where
+    E: Send + 'static,
+    <E::Session as SessionExt>::ID: Send,
 {
     async fn run(mut self) {
         tracing::info!("starting websocket server");
         loop {
             if let Err(err) = async {
                 tokio::select! {
-                    Some(NewConnection{socket, address, respond_to}) = self.connections.recv() => {
-                        let session = self.extension.on_connect(socket, address).await?;
+                    Some(NewConnection{socket, address, respond_to, request}) = self.connections.recv() => {
+                        let session = self.extension.on_connect(socket, request, address).await?;
                         let session_id = session.id.clone();
                         tracing::info!("connection from {address} accepted");
-                        respond_to.send(session_id.clone()).unwrap();
-
-                        tokio::spawn({
-                            let server = self.server.clone();
-                            async move {
-                                let result = session.closed().await;
-                                server.disconnected(session_id, result).await;
-                            }
+                        let _ = respond_to.send(session_id.clone());
+                        let tx = self.disconnections_tx.clone();
+                        tokio::spawn(async move {
+                            let jh = session.jh.lock().unwrap().take().unwrap();
+                            let result = jh.await.unwrap();
+                            tx.send(Disconnected { id: session_id, result }).map_err(|_| ()).unwrap();
                         });
                     }
                     Some(Disconnected{id, result}) = self.disconnections.recv() => {
@@ -151,13 +150,15 @@ impl<E: ServerExt> ServerActor<E>
                         };
                     }
                     Some(call) = self.calls.recv() => {
-                        self.extension.on_call(call).await?
+                        if let Err(err) = self.extension.on_call(call).await {
+                            tracing::error!("Error when calling {:?}", err);
+                        }
                     }
                 }
                 Ok::<_, Error>(())
             }
                 .await {
-                error!("Error when processing {:?}", err);
+                tracing::error!("error when processing: {err:?}");
             }
         }
     }
@@ -176,6 +177,7 @@ pub trait ServerExt: Send {
     async fn on_connect(
         &mut self,
         socket: Socket,
+        request: Request,
         address: SocketAddr,
     ) -> Result<
         Session<<Self::Session as SessionExt>::ID, <Self::Session as SessionExt>::Call>,
@@ -191,7 +193,6 @@ pub trait ServerExt: Send {
 #[derive(Debug)]
 pub struct Server<E: ServerExt> {
     connections: mpsc::UnboundedSender<NewConnection<E>>,
-    disconnections: mpsc::UnboundedSender<Disconnected<E>>,
     calls: mpsc::UnboundedSender<E::Call>,
 }
 
@@ -202,24 +203,21 @@ impl<E: ServerExt> From<Server<E>> for mpsc::UnboundedSender<E::Call> {
 }
 
 impl<E: ServerExt + 'static> Server<E> {
-    pub fn create(
-        create: impl FnOnce(Self) -> E,
-    ) -> (Self, JoinHandle<()>) {
+    pub fn create(create: impl FnOnce(Self) -> E) -> (Self, JoinHandle<()>) {
         let (connection_sender, connection_receiver) = mpsc::unbounded_channel();
         let (disconnection_sender, disconnection_receiver) = mpsc::unbounded_channel();
         let (call_sender, call_receiver) = mpsc::unbounded_channel();
         let handle = Self {
             connections: connection_sender,
             calls: call_sender,
-            disconnections: disconnection_sender,
         };
         let extension = create(handle.clone());
         let actor = ServerActor {
             connections: connection_receiver,
             disconnections: disconnection_receiver,
+            disconnections_tx: disconnection_sender,
             calls: call_receiver,
             extension,
-            server: handle.clone(),
         };
         let future = tokio::spawn(actor.run());
 
@@ -231,6 +229,7 @@ impl<E: ServerExt> Server<E> {
     pub async fn accept(
         &self,
         socket: Socket,
+        request: Request,
         address: SocketAddr,
     ) -> <E::Session as SessionExt>::ID {
         // TODO: can we refuse the connection here?
@@ -238,23 +237,13 @@ impl<E: ServerExt> Server<E> {
         self.connections
             .send(NewConnection {
                 socket,
+                request,
                 address,
                 respond_to: sender,
             })
             .map_err(|_| "connections is down")
             .unwrap();
         receiver.await.unwrap()
-    }
-
-    pub(crate) async fn disconnected(
-        &self,
-        id: <E::Session as SessionExt>::ID,
-        result: Result<Option<CloseFrame>, Error>,
-    ) {
-        self.disconnections
-            .send(Disconnected { id, result })
-            .map_err(|_| ())
-            .unwrap();
     }
 
     pub fn call(&self, call: E::Call) {
@@ -275,11 +264,10 @@ impl<E: ServerExt> Server<E> {
     }
 }
 
-impl<E: ServerExt> std::clone::Clone for Server<E> {
+impl<E: ServerExt> Clone for Server<E> {
     fn clone(&self) -> Self {
         Self {
             connections: self.connections.clone(),
-            disconnections: self.disconnections.clone(),
             calls: self.calls.clone(),
         }
     }

@@ -5,16 +5,17 @@
 //!
 //! Refer to [`client`] or [`server`] module for detailed implementation guides.
 
+extern crate core;
+
 mod socket;
 
 pub use socket::CloseCode;
 pub use socket::CloseFrame;
+pub use socket::Config as SocketConfig;
 pub use socket::Message;
-pub use socket::RawMessage;
 pub use socket::Sink;
 pub use socket::Socket;
 pub use socket::Stream;
-pub use socket::Config as SocketConfig;
 
 #[cfg(feature = "axum")]
 pub mod axum;
@@ -47,3 +48,4 @@ cfg_if::cfg_if! {
 }
 
 pub type Error = eyre::Error;
+pub type Request = http::Request<()>;

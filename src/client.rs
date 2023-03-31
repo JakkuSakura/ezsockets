@@ -52,6 +52,7 @@ use crate::socket::Config;
 use crate::CloseFrame;
 use crate::Error;
 use crate::Message;
+use crate::Request;
 use crate::Socket;
 use async_trait::async_trait;
 use base64::Engine;
@@ -136,8 +137,8 @@ impl ClientConfig {
         self
     }
 
-    fn connect_http_request(&self) -> http::Request<()> {
-        let mut http_request = http::Request::builder()
+    fn connect_http_request(&self) -> Request {
+        let mut http_request = Request::builder()
             .uri(self.url.as_str())
             .method("GET")
             .header("Host", self.url.host().unwrap().to_string())
@@ -261,7 +262,7 @@ pub async fn connect<E: ClientExt + 'static>(
         }
         let socket = Socket::new(stream, Config::default());
         tracing::info!("connected to {}", config.url);
-        let mut actor = ClientActor {
+        let actor = ClientActor {
             client,
             socket_receiver,
             call_receiver,
@@ -286,12 +287,19 @@ struct ClientActor<E: ClientExt> {
 }
 
 impl<E: ClientExt> ClientActor<E> {
-    async fn run(&mut self) -> Result<(), Error> {
+    async fn run(mut self) -> Result<(), Error> {
         loop {
             tokio::select! {
                 Some(message) = self.socket_receiver.recv() => {
-                    self.socket.send(message.clone()).await;
-                    if let Message::Close(_frame) = message {
+                    let close =
+                        if let Message::Close(_frame) = &message {
+                            true
+                        } else  {
+                            false
+                        };
+
+                    let _ = self.socket.sink.send(message);
+                    if close {
                         return Ok(())
                     }
                 }
@@ -308,6 +316,7 @@ impl<E: ClientExt> ClientActor<E> {
                                     self.client.on_close().await?;
                                     self.reconnect().await;
                                 }
+                                _ => {}
                             };
                         }
                         Some(Err(error)) => {
