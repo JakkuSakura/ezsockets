@@ -205,7 +205,7 @@ cfg_if::cfg_if! {
                         continue;
                     }
                 };
-                server.accept(socket, request, address).await;
+                let _ = server.accept(socket, request, address).await;
             }
         }
 

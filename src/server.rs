@@ -230,7 +230,7 @@ impl<E: ServerExt> Server<E> {
         socket: Socket,
         request: Request,
         address: SocketAddr,
-    ) -> <E::Session as SessionExt>::ID {
+    ) -> Option<<E::Session as SessionExt>::ID> {
         // TODO: can we refuse the connection here?
         let (sender, receiver) = oneshot::channel();
         self.connections
@@ -242,7 +242,7 @@ impl<E: ServerExt> Server<E> {
             })
             .map_err(|_| "connections is down")
             .unwrap();
-        receiver.await.unwrap()
+        receiver.await.ok()
     }
 
     pub fn call(&self, call: E::Call) {
