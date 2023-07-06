@@ -1,5 +1,3 @@
-//! `tungstenite` feature must be enabled in order to use this module.
-//!
 //! ```no_run
 //! # use async_trait::async_trait;
 //! # struct MySession {}
@@ -27,17 +25,27 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let (server, _) = ezsockets::Server::create(|_| MyServer {});
-//!     ezsockets::tungstenite::run(server, "127.0.0.1:8080").await.unwrap();
+//!     ezsockets::tungstenite::run(server, "127.0.0.1:8080",).await.unwrap();
 //! }
 //! ```
 
 use crate::tungstenite::tungstenite::handshake::server::ErrorResponse;
 use crate::CloseCode;
 use crate::CloseFrame;
+use crate::Error;
 use crate::Message;
 use crate::Request;
+use crate::Server;
+use crate::ServerExt;
+use crate::Socket;
 use tokio_tungstenite::tungstenite;
 use tungstenite::protocol::frame::coding::CloseCode as TungsteniteCloseCode;
+
+use crate::config::WebsocketConfig;
+use crate::server::CreateServer;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
+use tracing::info;
 
 impl<'t> From<tungstenite::protocol::CloseFrame<'t>> for CloseFrame {
     fn from(frame: tungstenite::protocol::CloseFrame) -> Self {
@@ -123,140 +131,99 @@ impl From<tungstenite::Message> for Message {
     }
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "server")] {
-        use crate::Server;
-        use crate::Error;
-        use crate::Socket;
-        use crate::socket;
-        use crate::ServerExt;
+pub enum Acceptor {
+    Plain,
+    #[cfg(feature = "native-tls")]
+    NativeTls(tokio_native_tls::TlsAcceptor),
+    #[cfg(feature = "rustls")]
+    Rustls(tokio_rustls::TlsAcceptor),
+}
 
-        use tokio::net::TcpListener;
-        use tokio::net::ToSocketAddrs;
-        use tokio::net::TcpStream;
+impl Acceptor {
+    async fn accept(
+        &self,
+        stream: TcpStream,
+        config: WebsocketConfig,
+    ) -> Result<(Socket, Request), Error> {
+        let mut req0 = None;
+        let callback = |req: &http::Request<()>,
+                        resp: http::Response<()>|
+         -> Result<http::Response<()>, ErrorResponse> {
+            let mut req1 = Request::builder()
+                .method(req.method().clone())
+                .uri(req.uri().clone())
+                .version(req.version());
+            for (k, v) in req.headers() {
+                req1 = req1.header(k, v);
+            }
+            req0 = Some(req1.body(()).unwrap());
 
-        pub enum Acceptor {
-            Plain,
+            Ok(resp)
+        };
+        let socket = match self {
+            Acceptor::Plain => {
+                let socket = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
+                Socket::new(socket, config)
+            }
             #[cfg(feature = "native-tls")]
-            NativeTls(tokio_native_tls::TlsAcceptor),
+            Acceptor::NativeTls(acceptor) => {
+                let tls_stream = acceptor.accept(stream).await?;
+                let socket = tokio_tungstenite::accept_hdr_async(tls_stream, callback).await?;
+                Socket::new(socket, config)
+            }
             #[cfg(feature = "rustls")]
-            Rustls(tokio_rustls::TlsAcceptor),
-        }
-
-        impl Acceptor {
-            async fn accept(&self, stream: TcpStream, config: socket::Config) -> Result<(Socket, Request), Error> {
-                 let mut req0 = None;
-                 let callback = |req: &http::Request<()>, resp: http::Response<()>| -> Result<http::Response<()>, ErrorResponse> {
-                    let mut req1 = Request::builder()
-                        .method(req.method().clone())
-                        .uri(req.uri().clone())
-                        .version(req.version());
-                    for (k, v) in req.headers() {
-                        req1 = req1.header(k, v);
-                    }
-                    req0 = Some(req1.body(()).unwrap());
-
-                    Ok(resp)
-                };
-                let socket = match self {
-                    Acceptor::Plain => {
-                        let socket = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
-                        Socket::new(socket, config)
-                    }
-                    #[cfg(feature = "native-tls")]
-                    Acceptor::NativeTls(acceptor) => {
-                        let tls_stream = acceptor.accept(stream).await?;
-                        let socket = tokio_tungstenite::accept_hdr_async(tls_stream, callback).await?;
-                        Socket::new(socket, config)
-                    }
-                    #[cfg(feature = "rustls")]
-                    Acceptor::Rustls(acceptor) => {
-                        let tls_stream = acceptor.accept(stream).await?;
-                        let socket = tokio_tungstenite::accept_hdr_async(tls_stream, callback).await?;
-                        Socket::new(socket, config)
-                    }
-                };
-                Ok((socket, req0.unwrap()))
+            Acceptor::Rustls(acceptor) => {
+                let tls_stream = acceptor.accept(stream).await?;
+                let socket = tokio_tungstenite::accept_hdr_async(tls_stream, callback).await?;
+                Socket::new(socket, config)
             }
-        }
-
-        async fn run_acceptor<E>(
-            server: Server<E>,
-            listener: TcpListener,
-            acceptor: Acceptor,
-            config: socket::Config
-        ) -> Result<(), Error>
-        where
-            E: ServerExt + 'static
-        {
-            loop {
-                // TODO: Find a better way without those stupid matches
-                let (stream, address) = match listener.accept().await {
-                    Ok(stream) => stream,
-                    Err(err) => {
-                        tracing::error!("failed to accept tcp connection: {:?}", err);
-                        continue;
-                    },
-                };
-                let (socket, request) = match acceptor.accept(stream, config.clone()).await {
-                    Ok(socket) => socket,
-                    Err(err) => {
-                        tracing::error!(%address, "failed to accept websocket connection: {:?}", err);
-                        continue;
-                    }
-                };
-                let _ = server.accept(socket, request, address).await;
-            }
-        }
-
-        // Run the server
-        pub async fn run<E, A>(
-            server: Server<E>,
-            address: A,
-        ) -> Result<(), Error>
-        where
-            E: ServerExt + 'static,
-            A: ToSocketAddrs,
-        {
-            let listener = TcpListener::bind(address).await?;
-            run_acceptor(server, listener, Acceptor::Plain, Default::default()).await
-        }
-        // Run the server
-        pub async fn run_with_config<E, A>(
-            server: Server<E>,
-            address: A,
-            config: socket::Config
-        ) -> Result<(), Error>
-        where
-            E: ServerExt + 'static,
-            A: ToSocketAddrs,
-        {
-            let listener = TcpListener::bind(address).await?;
-            run_acceptor(server, listener, Acceptor::Plain, config).await
-        }
-
-        /// Run the server on custom `Listener` and `Acceptor`
-        /// For default acceptor use `Acceptor::plain`
-        pub async fn run_on<E>(
-            server: Server<E>,
-            listener: TcpListener,
-            acceptor: Acceptor,
-        ) -> Result<(), Error>
-        where
-            E: ServerExt + 'static
-        {
-            run_acceptor(server, listener, acceptor, Default::default()).await
-        }
-        pub async fn run_on_with_config<E>(
-            server: Server<E>,
-            listener: TcpListener,
-            acceptor: Acceptor,
-            config: socket::Config
-        ) -> Result<(), Error>
-        where
-            E: ServerExt + 'static
-        {
-            run_acceptor(server, listener, acceptor, config).await
-        }
+        };
+        Ok((socket, req0.unwrap()))
     }
+}
+
+async fn run_acceptor<E>(
+    server: Server<E>,
+    listener: TcpListener,
+    acceptor: Acceptor,
+    config: WebsocketConfig,
+) -> Result<(), Error>
+where
+    E: ServerExt + 'static,
+{
+    loop {
+        // TODO: Find a better way without those stupid matches
+        let (stream, address) = match listener.accept().await {
+            Ok(stream) => stream,
+            Err(err) => {
+                tracing::error!("failed to accept tcp connection: {:?}", err);
+                continue;
+            }
+        };
+        info!("Accepted connection from {}", address);
+        let (socket, request) = match acceptor.accept(stream, config.clone()).await {
+            Ok(socket) => socket,
+            Err(err) => {
+                tracing::error!(%address, "failed to accept websocket connection: {:?}", err);
+                continue;
+            }
+        };
+        info!("Accepted websocket connection from {}", address);
+        let _ = server.accept(socket, request, address).await;
+    }
+}
+
+// Run the server
+pub async fn run<E>(
+    config: WebsocketConfig,
+    acceptor: Acceptor,
+    server: CreateServer<E>,
+) -> Result<(), Error>
+where
+    E: ServerExt + 'static,
+{
+    info!("Starting websocket server on {}", config.address);
+    let listener = TcpListener::bind(&config.address).await?;
+    let (server, _) = server.create(config.channel_size);
+    run_acceptor(server, listener, acceptor, config).await
 }

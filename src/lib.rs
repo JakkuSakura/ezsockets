@@ -11,41 +11,22 @@ mod socket;
 
 pub use socket::CloseCode;
 pub use socket::CloseFrame;
-pub use socket::Config as SocketConfig;
 pub use socket::Message;
 pub use socket::Sink;
 pub use socket::Socket;
 pub use socket::Stream;
 
-#[cfg(feature = "axum")]
-pub mod axum;
-
 #[cfg(feature = "tokio-tungstenite")]
 pub mod tungstenite;
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "client")] {
-        pub mod client;
+pub mod config;
+pub mod server;
+pub mod session;
 
-        pub use client::connect;
-        pub use client::ClientConfig;
-        pub use client::ClientExt;
-        pub use client::Client;
-    }
-}
+pub use server::Server;
+pub use server::ServerExt;
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "server")] {
-        pub mod server;
-        pub mod session;
-
-        pub use server::Server;
-        pub use server::ServerExt;
-
-        pub use session::Session;
-        pub use session::SessionExt;
-    }
-}
-
+pub use session::Session;
+pub use session::SessionExt;
 pub type Error = eyre::Error;
 pub type Request = http::Request<()>;

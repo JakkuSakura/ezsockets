@@ -2,10 +2,10 @@
 name = "ezsockets"
 version = "0.5.1"
 edition = "2021"
-authors = ["Grzegorz Barański <me@gbaranski.com>"]
+authors = ["Jiangkun QIU <qjk2001@gmail.com>"]
 description = "WebSockets server & client made easy"
 readme = "README.md"
-repository = "https://github.com/gbaranski/ezsockets"
+repository = "https://github.com/qiujiangkun/ezsockets"
 license = "MIT"
 keywords = ["websocket", "networking", "async"]
 categories = ["asynchronous", "network-programming", "web-programming::websocket"]
@@ -22,20 +22,15 @@ tracing = "0.1.31"
 url = "2.2.2"
 cfg-if = "1.0.0"
 
-axum_crate = { package = "axum", version = "0.6.1", features = ["ws"], optional = true }
-tokio-tungstenite = { version = "0.18.0", optional = true }
-tokio-rustls = { version = "0.23.4", optional = true }
+tokio-tungstenite = { version = "0.19.0", optional = true }
+tokio-rustls = { version = "0.24.0", optional = true }
 tokio-native-tls = { version = "0.3.1", optional = true }
 eyre = "0.6.8"
 
 [features]
-default = ["client", "server"]
+default = ["tungstenite"]
 
-client = ["tokio-tungstenite"]
-
-server = []
-tungstenite = ["server", "tokio-tungstenite"]
-axum = ["server", "axum_crate"]
+tungstenite = ["tokio-tungstenite"]
 
 tls = []
 native-tls = ["tls", "tokio-native-tls", "tokio-tungstenite/native-tls"]
@@ -44,7 +39,7 @@ rustls = ["tls", "tokio-rustls", "tokio-tungstenite/rustls-tls-webpki-roots"]
 [dev-dependencies]
 tokio = { version = "1.17.0", features = ["full"] }
 tracing-subscriber = "0.3.9"
-criterion = "0.4"
+criterion = "0.5.1"
 rand = "0.8.5"
 
 [package.metadata.docs.rs]
@@ -54,18 +49,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [workspace]
 members = [
-    "examples/chat-client",
-    "examples/chat-server",
-    "examples/chat-server-axum",
-    "examples/echo-server",
-    "examples/echo-server-native-tls",
-    "examples/simple-client",
-    "examples/counter-server"
+    "examples/echo-server"
 ]
 
-[[test]]
-name = "axum"
-required-features = ["axum"]
 
 [[test]]
 name = "tungstenite"

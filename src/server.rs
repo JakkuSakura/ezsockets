@@ -116,6 +116,7 @@ struct ServerActor<E: ServerExt> {
     disconnections_tx: mpsc::UnboundedSender<Box<dyn Any + Send>>,
     calls: mpsc::UnboundedReceiver<E::Call>,
     extension: E,
+    channel_size: usize,
 }
 
 impl<E: ServerExt> ServerActor<E>
@@ -124,13 +125,12 @@ where
     <E::Session as SessionExt>::ID: Send,
 {
     async fn run(mut self) {
-        tracing::info!("starting websocket server");
         loop {
             if let Err(err) = async {
                 tokio::select! {
                     Some(NewConnection{mut socket, address, respond_to, request}) = self.connections.recv() => {
                         socket.disconnected = Some(self.disconnections_tx.clone());
-                        let session = self.extension.on_connect(socket, request, address).await?;
+                        let session = self.extension.on_connect(socket, request, address, self.channel_size).await?;
                         let session_id = session.id.clone();
                         tracing::info!("connection from {address} accepted");
                         let _ = respond_to.send(session_id.clone());
@@ -178,6 +178,7 @@ pub trait ServerExt: Send {
         socket: Socket,
         request: Request,
         address: SocketAddr,
+        channel_size: usize,
     ) -> Result<
         Session<<Self::Session as SessionExt>::ID, <Self::Session as SessionExt>::Call>,
         Error,
@@ -188,7 +189,19 @@ pub trait ServerExt: Send {
     /// This is useful for concurrency and polymorphism.
     async fn on_call(&mut self, call: Self::Call) -> Result<(), Error>;
 }
-
+pub struct CreateServer<E: ServerExt> {
+    create_fn: Box<dyn FnOnce(Server<E>) -> E>,
+}
+impl<E: ServerExt + 'static> CreateServer<E> {
+    pub fn new(create_fn: impl FnOnce(Server<E>) -> E + 'static) -> Self {
+        Self {
+            create_fn: Box::new(create_fn),
+        }
+    }
+    pub fn create(self, channel_size: usize) -> (Server<E>, JoinHandle<()>) {
+        <Server<E>>::create(self.create_fn, channel_size)
+    }
+}
 #[derive(Debug)]
 pub struct Server<E: ServerExt> {
     connections: mpsc::UnboundedSender<NewConnection<E>>,
@@ -202,7 +215,10 @@ impl<E: ServerExt> From<Server<E>> for mpsc::UnboundedSender<E::Call> {
 }
 
 impl<E: ServerExt + 'static> Server<E> {
-    pub fn create(create: impl FnOnce(Self) -> E) -> (Self, JoinHandle<()>) {
+    pub(crate) fn create(
+        create: impl FnOnce(Self) -> E,
+        channel_size: usize,
+    ) -> (Self, JoinHandle<()>) {
         let (connection_sender, connection_receiver) = mpsc::unbounded_channel();
         let (disconnection_sender, disconnection_receiver) = mpsc::unbounded_channel();
         let (call_sender, call_receiver) = mpsc::unbounded_channel();
@@ -217,6 +233,7 @@ impl<E: ServerExt + 'static> Server<E> {
             disconnections_tx: disconnection_sender,
             calls: call_receiver,
             extension,
+            channel_size,
         };
         let future = tokio::spawn(actor.run());
 

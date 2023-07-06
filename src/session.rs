@@ -30,8 +30,8 @@ pub trait SessionExt: Send {
 
 pub struct Session<I, C> {
     pub id: I,
-    socket: mpsc::UnboundedSender<Message>,
-    calls: mpsc::UnboundedSender<C>,
+    socket: mpsc::Sender<Message>,
+    calls: mpsc::Sender<C>,
 }
 
 impl<I: std::fmt::Debug, C> std::fmt::Debug for Session<I, C> {
@@ -57,9 +57,10 @@ impl<I: std::fmt::Display + Clone + Send + 'static, C: Send> Session<I, C> {
         session_fn: impl FnOnce(Session<I, C>) -> S,
         session_id: I,
         socket: Socket,
+        channel_size: usize,
     ) -> Self {
-        let (socket_sender, socket_receiver) = mpsc::unbounded_channel();
-        let (call_sender, call_receiver) = mpsc::unbounded_channel();
+        let (socket_sender, socket_receiver) = mpsc::channel(channel_size);
+        let (call_sender, call_receiver) = mpsc::channel(channel_size);
 
         let handle = Self {
             id: session_id.clone(),
@@ -91,23 +92,26 @@ impl<I: std::fmt::Display + Clone, C> Session<I, C> {
     }
 
     /// Sends a Text message to the server
-    pub fn text(&self, text: String) {
+    pub async fn text(&self, text: String) {
         self.socket
             .send(Message::Text(text))
+            .await
             .unwrap_or_else(|_| tracing::warn!("Session::text {PANIC_MESSAGE_UNHANDLED_CLOSE}"));
     }
 
     /// Sends a Binary message to the server
-    pub fn binary(&self, bytes: Vec<u8>) {
+    pub async fn binary(&self, bytes: Vec<u8>) {
         self.socket
             .send(Message::Binary(bytes))
+            .await
             .unwrap_or_else(|_| tracing::warn!("Session::binary {PANIC_MESSAGE_UNHANDLED_CLOSE}"));
     }
 
     /// Calls a method on the session
-    pub fn call(&self, call: C) {
+    pub async fn call(&self, call: C) {
         self.calls
             .send(call)
+            .await
             .unwrap_or_else(|_| tracing::warn!("Session::call {PANIC_MESSAGE_UNHANDLED_CLOSE}"));
     }
 
@@ -120,7 +124,7 @@ impl<I: std::fmt::Display + Clone, C> Session<I, C> {
         let (sender, receiver) = oneshot::channel();
         let call = f(sender);
 
-        self.calls.send(call).ok()?;
+        self.calls.send(call).await.ok()?;
         receiver.await.ok()
     }
 }
@@ -128,8 +132,8 @@ impl<I: std::fmt::Display + Clone, C> Session<I, C> {
 pub(crate) struct SessionActor<E: SessionExt> {
     pub extension: E,
     id: E::ID,
-    socket_receiver: mpsc::UnboundedReceiver<Message>,
-    call_receiver: mpsc::UnboundedReceiver<E::Call>,
+    socket_receiver: mpsc::Receiver<Message>,
+    call_receiver: mpsc::Receiver<E::Call>,
     socket: Socket,
 }
 

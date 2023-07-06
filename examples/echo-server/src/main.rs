@@ -1,7 +1,9 @@
 use async_trait::async_trait;
+use ezsockets::config::WebsocketConfig;
+use ezsockets::server::CreateServer;
+use ezsockets::tungstenite::Acceptor;
 use ezsockets::Error;
 use ezsockets::Request;
-use ezsockets::Server;
 use ezsockets::Socket;
 use std::net::SocketAddr;
 
@@ -20,9 +22,15 @@ impl ezsockets::ServerExt for EchoServer {
         socket: Socket,
         _request: Request,
         address: SocketAddr,
+        channel_size: usize,
     ) -> Result<Session, Error> {
         let id = address.port();
-        let session = Session::create(|handle| EchoSession { id, handle }, id, socket);
+        let session = Session::create(
+            |handle| EchoSession { id, handle },
+            id,
+            socket,
+            channel_size,
+        );
         Ok(session)
     }
 
@@ -54,7 +62,7 @@ impl ezsockets::SessionExt for EchoSession {
     }
 
     async fn on_text(&mut self, text: String) -> Result<(), Error> {
-        self.handle.text(text);
+        self.handle.text(text).await;
         Ok(())
     }
 
@@ -71,8 +79,15 @@ impl ezsockets::SessionExt for EchoSession {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
-    let (server, _) = Server::create(|_server| EchoServer {});
-    ezsockets::tungstenite::run(server, "127.0.0.1:8080")
-        .await
-        .unwrap();
+    let server = CreateServer::new(|_server| EchoServer {});
+    ezsockets::tungstenite::run(
+        WebsocketConfig {
+            address: "127.0.0.1:8080".to_string(),
+            ..WebsocketConfig::default()
+        },
+        Acceptor::Plain,
+        server,
+    )
+    .await
+    .unwrap();
 }

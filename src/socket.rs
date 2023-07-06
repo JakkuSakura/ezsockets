@@ -1,3 +1,4 @@
+use crate::config::WebsocketConfig;
 use crate::Error;
 use futures::stream::BoxStream;
 use futures::{SinkExt, StreamExt, TryStreamExt};
@@ -7,21 +8,6 @@ use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::time::Instant;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub heartbeat: Duration,
-    pub timeout: Duration,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            heartbeat: Duration::from_secs(5),
-            timeout: Duration::from_secs(10),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub enum CloseCode {
@@ -261,12 +247,12 @@ impl Stream {
 pub struct Socket {
     pub sink: Sink,
     pub stream: Stream,
-    pub config: Config,
+    pub config: WebsocketConfig,
     pub(crate) disconnected: Option<tokio::sync::mpsc::UnboundedSender<Box<dyn Any + Send>>>,
 }
 
 impl Socket {
-    pub fn new<M, E: std::error::Error, S>(socket: S, config: Config) -> Self
+    pub fn new<M, E: std::error::Error, S>(socket: S, config: WebsocketConfig) -> Self
     where
         M: Into<Message> + From<Message> + std::fmt::Debug + Send + Sync + Unpin + 'static,
         E: Into<Error>,
