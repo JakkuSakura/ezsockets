@@ -1,90 +1,4 @@
-//! # WebSocket Server
-//! ## Get started
-//!
-//! To create a simple echo server, we need to define a `Session` struct.
-//! The code below represents a simple echo server.
-//!
-//! ```
-//! use async_trait::async_trait;
-//!
-//! // Create our own session that implements `SessionExt`
-//!
-//! type SessionID = u16;
-//! type Session = ezsockets::Session<SessionID, ()>;
-//!
-//! struct EchoSession {
-//!     handle: Session,
-//!     id: SessionID,
-//! }
-//!
-//! #[async_trait]
-//! impl ezsockets::SessionExt for EchoSession {
-//!     type ID = SessionID;
-//!     type Call = ();
-//!
-//!     fn id(&self) -> &Self::ID {
-//!         &self.id
-//!     }
-//!
-//!     // Define handlers for incoming messages
-//!
-//!     async fn on_text(&mut self, text: String) -> Result<(), ezsockets::Error> {
-//!         self.handle.text(text); // Send response to the client
-//!         Ok(())
-//!     }
-//!
-//!     async fn on_binary(&mut self, _bytes: Vec<u8>) -> Result<(), ezsockets::Error> {
-//!         unimplemented!()
-//!     }
-//!
-//!     // `on_call` is for custom messages, it's useful if you want to send messages from other thread or tokio task. Use `Session::call` to send a message.
-//!     async fn on_call(&mut self, call: Self::Call) -> Result<(), ezsockets::Error> {
-//!         let () = call;
-//!         Ok(())
-//!     }
-//! }
-//!
-//! // Create our own server that implements `ServerExt`
-//!
-//! use ezsockets::Server;
-//! use std::net::SocketAddr;
-//!
-//! struct EchoServer {}
-//!
-//! #[async_trait]
-//! impl ezsockets::ServerExt for EchoServer {
-//!     type Session = EchoSession;
-//!     type Call = ();
-//!
-//!     async fn on_connect(
-//!         &mut self,
-//!         socket: ezsockets::Socket,
-//!         request: ezsockets::Request,
-//!         address: SocketAddr,
-//!     ) -> Result<Session, ezsockets::Error> {
-//!         let id = address.port();
-//!         let session = Session::create(|handle| EchoSession { id, handle }, id, socket);
-//!         Ok(session)
-//!     }
-//!
-//!     async fn on_disconnect(
-//!         &mut self,
-//!         _id: <Self::Session as ezsockets::SessionExt>::ID,
-//!     ) -> Result<(), ezsockets::Error> {
-//!         Ok(())
-//!     }
-//!
-//!     async fn on_call(&mut self, call: Self::Call) -> Result<(), ezsockets::Error> {
-//!         let () = call;
-//!         Ok(())
-//!     }
-//! }
-//! ```
-//!
-//! That's it! To start the server you need to one of supported backends:
-//! - [tungstenite](crate::tungstenite) - the simplest option based on [`tokio-tungstenite`](https://crates.io/crates/tokio-tungstenite)
-//! - [axum](crate::axum) - based on [`axum`](https://crates.io/crates/axum), a web framework for Rust
-
+use crate::config::WebsocketConfig;
 use crate::CloseFrame;
 use crate::Error;
 use crate::Request;
@@ -116,7 +30,7 @@ struct ServerActor<E: ServerExt> {
     disconnections_tx: mpsc::UnboundedSender<Box<dyn Any + Send>>,
     calls: mpsc::UnboundedReceiver<E::Call>,
     extension: E,
-    channel_size: usize,
+    config: WebsocketConfig,
 }
 
 impl<E: ServerExt> ServerActor<E>
@@ -130,7 +44,7 @@ where
                 tokio::select! {
                     Some(NewConnection{mut socket, address, respond_to, request}) = self.connections.recv() => {
                         socket.disconnected = Some(self.disconnections_tx.clone());
-                        let session = self.extension.on_connect(socket, request, address, self.channel_size).await?;
+                        let session = self.extension.on_connect(socket, request, address, &self.config).await?;
                         let session_id = session.id.clone();
                         tracing::info!("connection from {address} accepted");
                         let _ = respond_to.send(session_id.clone());
@@ -178,7 +92,7 @@ pub trait ServerExt: Send {
         socket: Socket,
         request: Request,
         address: SocketAddr,
-        channel_size: usize,
+        config: &WebsocketConfig,
     ) -> Result<
         Session<<Self::Session as SessionExt>::ID, <Self::Session as SessionExt>::Call>,
         Error,
@@ -198,8 +112,8 @@ impl<E: ServerExt + 'static> CreateServer<E> {
             create_fn: Box::new(create_fn),
         }
     }
-    pub fn create(self, channel_size: usize) -> (Server<E>, JoinHandle<()>) {
-        <Server<E>>::create(self.create_fn, channel_size)
+    pub fn create(self, config: WebsocketConfig) -> (Server<E>, JoinHandle<()>) {
+        <Server<E>>::create(self.create_fn, config)
     }
 }
 #[derive(Debug)]
@@ -217,7 +131,7 @@ impl<E: ServerExt> From<Server<E>> for mpsc::UnboundedSender<E::Call> {
 impl<E: ServerExt + 'static> Server<E> {
     pub(crate) fn create(
         create: impl FnOnce(Self) -> E,
-        channel_size: usize,
+        config: WebsocketConfig,
     ) -> (Self, JoinHandle<()>) {
         let (connection_sender, connection_receiver) = mpsc::unbounded_channel();
         let (disconnection_sender, disconnection_receiver) = mpsc::unbounded_channel();
@@ -233,7 +147,7 @@ impl<E: ServerExt + 'static> Server<E> {
             disconnections_tx: disconnection_sender,
             calls: call_receiver,
             extension,
-            channel_size,
+            config,
         };
         let future = tokio::spawn(actor.run());
 

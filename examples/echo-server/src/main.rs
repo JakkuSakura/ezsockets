@@ -22,15 +22,10 @@ impl ezsockets::ServerExt for EchoServer {
         socket: Socket,
         _request: Request,
         address: SocketAddr,
-        channel_size: usize,
+        config: &WebsocketConfig,
     ) -> Result<Session, Error> {
         let id = address.port();
-        let session = Session::create(
-            |handle| EchoSession { id, handle },
-            id,
-            socket,
-            channel_size,
-        );
+        let session = Session::create(|handle| EchoSession { id, handle }, id, socket, config);
         Ok(session)
     }
 

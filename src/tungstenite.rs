@@ -1,34 +1,3 @@
-//! ```no_run
-//! # use async_trait::async_trait;
-//! # struct MySession {}
-//! # #[async_trait::async_trait]
-//! # impl ezsockets::SessionExt for MySession {
-//! #   type ID = u16;
-//! #   type Call = ();
-//! #   fn id(&self) -> &Self::ID { unimplemented!() }
-//! #   async fn on_text(&mut self, text: String) -> Result<(), ezsockets::Error> { unimplemented!() }
-//! #   async fn on_binary(&mut self, bytes: Vec<u8>) -> Result<(), ezsockets::Error> { unimplemented!() }
-//! #   async fn on_call(&mut self, call: Self::Call) -> Result<(), ezsockets::Error> { unimplemented!() }
-//! # }
-//! struct MyServer {}
-//!
-//! #[async_trait]
-//! impl ezsockets::ServerExt for MyServer {
-//!    // ...
-//!    # type Session = MySession;
-//!    # type Call = ();
-//!    # async fn on_connect(&mut self, socket: ezsockets::Socket, request: ezsockets::Request, address: std::net::SocketAddr) -> Result<ezsockets::Session<u16, ()>, ezsockets::Error> { unimplemented!() }
-//!    # async fn on_disconnect(&mut self, id: <Self::Session as ezsockets::SessionExt>::ID) -> Result<(), ezsockets::Error> { unimplemented!() }
-//!    # async fn on_call(&mut self, call: Self::Call) -> Result<(), ezsockets::Error> { unimplemented!() }
-//! }
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     let (server, _) = ezsockets::Server::create(|_| MyServer {});
-//!     ezsockets::tungstenite::run(server, "127.0.0.1:8080",).await.unwrap();
-//! }
-//! ```
-
 use crate::tungstenite::tungstenite::handshake::server::ErrorResponse;
 use crate::CloseCode;
 use crate::CloseFrame;
@@ -224,6 +193,6 @@ where
 {
     info!("Starting websocket server on {}", config.address);
     let listener = TcpListener::bind(&config.address).await?;
-    let (server, _) = server.create(config.channel_size);
+    let (server, _) = server.create(config.clone());
     run_acceptor(server, listener, acceptor, config).await
 }

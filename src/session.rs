@@ -1,3 +1,4 @@
+use crate::config::WebsocketConfig;
 use crate::server::Disconnected;
 use crate::Error;
 use crate::Message;
@@ -57,10 +58,10 @@ impl<I: std::fmt::Display + Clone + Send + 'static, C: Send> Session<I, C> {
         session_fn: impl FnOnce(Session<I, C>) -> S,
         session_id: I,
         socket: Socket,
-        channel_size: usize,
+        config: &WebsocketConfig,
     ) -> Self {
-        let (socket_sender, socket_receiver) = mpsc::channel(channel_size);
-        let (call_sender, call_receiver) = mpsc::channel(channel_size);
+        let (socket_sender, socket_receiver) = mpsc::channel(config.channel_size);
+        let (call_sender, call_receiver) = mpsc::channel(config.channel_size);
 
         let handle = Self {
             id: session_id.clone(),
