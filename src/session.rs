@@ -176,13 +176,22 @@ impl<E: SessionExt> SessionActor<E> {
                 }
                 message = self.socket.stream.recv() => {
                     match message {
-                        Some(Ok(message)) => match message {
-                            Message::Text(text) => self.extension.on_text(text).await?,
-                            Message::Binary(bytes) => self.extension.on_binary(bytes).await?,
-                            Message::Close(frame) => {
-                                return Ok(frame.map(CloseFrame::from))
-                            },
-                            _ => {}
+                        Some(Ok(message)) => {
+                            let result = match message {
+                                Message::Text(text) => self.extension.on_text(text).await,
+                                Message::Binary(bytes) => self.extension.on_binary(bytes).await,
+                                Message::Close(frame) => {
+                                    return Ok(frame.map(CloseFrame::from))
+                                },
+                                _ => Ok(())
+                            };
+                            if let Err(err) = result {
+                                tracing::error!(id = %self.id, "error while handling message: {error}", error = err);
+                                while let Some(msg) = self.socket_receiver.try_recv().ok() {
+                                    self.socket.sink.send(msg).await?;
+                                }
+                                return Err(err.into())
+                            }
                         }
                         Some(Err(error)) => {
                             tracing::error!(id = %self.id, "connection error: {error}");
