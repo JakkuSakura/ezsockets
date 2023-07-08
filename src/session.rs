@@ -190,6 +190,10 @@ impl<E: SessionExt> SessionActor<E> {
                                 while let Some(msg) = self.socket_receiver.try_recv().ok() {
                                     self.socket.sink.send(msg).await?;
                                 }
+                                self.socket.sink.send(Message::Close(Some(CloseFrame {
+                                    code: CloseCode::Error,
+                                    reason: format!("{}", err),
+                                }))).await?;
                                 return Err(err.into())
                             }
                         }
