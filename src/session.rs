@@ -141,7 +141,7 @@ pub(crate) struct SessionActor<E: SessionExt> {
 impl<E: SessionExt> SessionActor<E> {
     pub(crate) async fn run(mut self) -> Result<Option<CloseFrame>, Error> {
         let mut interval = tokio::time::interval(self.socket.config.heartbeat);
-        let last_alive = Instant::now();
+        let mut last_alive = Instant::now();
         loop {
             tokio::select! {
                 biased;
@@ -180,6 +180,10 @@ impl<E: SessionExt> SessionActor<E> {
                             let result = match message {
                                 Message::Text(text) => self.extension.on_text(text).await,
                                 Message::Binary(bytes) => self.extension.on_binary(bytes).await,
+                                Message::Pong(_pong) => {
+                                    last_alive = Instant::now();
+                                    Ok(())
+                                }
                                 Message::Close(frame) => {
                                     return Ok(frame.map(CloseFrame::from))
                                 },
