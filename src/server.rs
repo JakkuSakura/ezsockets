@@ -113,7 +113,7 @@ impl<E: ServerExt + 'static> CreateServer<E> {
         }
     }
     pub fn create(self, config: WebsocketConfig) -> (Server<E>, JoinHandle<()>) {
-        <Server<E>>::create(self.create_fn, config)
+        <Server<E>>::create(config, self.create_fn)
     }
 }
 #[derive(Debug)]
@@ -130,8 +130,8 @@ impl<E: ServerExt> From<Server<E>> for mpsc::UnboundedSender<E::Call> {
 
 impl<E: ServerExt + 'static> Server<E> {
     pub(crate) fn create(
-        create: impl FnOnce(Self) -> E,
         config: WebsocketConfig,
+        create: impl FnOnce(Self) -> E,
     ) -> (Self, JoinHandle<()>) {
         let (connection_sender, connection_receiver) = mpsc::unbounded_channel();
         let (disconnection_sender, disconnection_receiver) = mpsc::unbounded_channel();

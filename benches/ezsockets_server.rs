@@ -1,6 +1,9 @@
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
+use ezsockets::config::WebsocketConfig;
+use ezsockets::server::CreateServer;
+use ezsockets::tungstenite::Acceptor;
 use tokio::net::TcpListener;
 
 type SessionID = u16;
@@ -18,6 +21,7 @@ impl ezsockets::ServerExt for EchoServer {
         socket: ezsockets::Socket,
         _request: ezsockets::Request,
         address: SocketAddr,
+        _config: &WebsocketConfig,
     ) -> Result<Session, ezsockets::Error> {
         let id = address.port();
         let session = Session::create(|handle| EchoSession { id, handle }, id, socket);
@@ -66,10 +70,10 @@ impl ezsockets::SessionExt for EchoSession {
     }
 }
 
-pub async fn run(listener: std::net::TcpListener) {
-    let listener = TcpListener::from_std(listener).unwrap();
-    let (server, _) = ezsockets::Server::create(|_| EchoServer {});
-    ezsockets::tungstenite::run_on(server, listener, ezsockets::tungstenite::Acceptor::Plain)
+pub async fn run() {
+    let config = WebsocketConfig::default();
+    let server = CreateServer::new(|_| EchoServer {});
+    ezsockets::tungstenite::run(config, Acceptor::Plain, server)
         .await
         .unwrap();
 }
