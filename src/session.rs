@@ -148,7 +148,7 @@ impl<E: SessionExt> SessionActor<E> {
                 _tick = interval.tick() => {
                     if last_alive.elapsed() > self.socket.config.timeout {
                         tracing::info!("closing connection due to timeout");
-                         self.socket.sink.send(Message::Close(Some(CloseFrame {
+                         self.socket.stream.send(Message::Close(Some(CloseFrame {
                             code: CloseCode::Normal,
                             reason: String::from("client didn't respond to Ping frame"),
                         }))).await?;
@@ -157,7 +157,7 @@ impl<E: SessionExt> SessionActor<E> {
                     // Use chrono Utc::now()
                     let timestamp = Utc::now().timestamp_micros();
                     let bytes = timestamp.to_be_bytes();
-                    self.socket.sink.send(Message::Ping(bytes.to_vec())).await?;
+                    self.socket.stream.send(Message::Ping(bytes.to_vec())).await?;
                 }
                 Some(message) = self.socket_receiver.recv() => {
                     let close = if let Message::Close(frame) = &message {
@@ -165,7 +165,7 @@ impl<E: SessionExt> SessionActor<E> {
                     } else {
                         None
                     };
-                    self.socket.sink.send(message.clone()).await?;
+                    self.socket.stream.send(message.clone()).await?;
                     if let Some(frame) = close {
                         return frame
                     }
@@ -173,7 +173,7 @@ impl<E: SessionExt> SessionActor<E> {
                 Some(call) = self.call_receiver.recv() => {
                     self.extension.on_call(call).await?;
                 }
-                message = self.socket.stream.recv() => {
+                message = self.socket.stream.next() => {
                     match message {
                         Some(Ok(message)) => {
                             let result = match message {
@@ -199,9 +199,9 @@ impl<E: SessionExt> SessionActor<E> {
                             if let Err(err) = result {
                                 tracing::error!(id = %self.id, "error while handling message: {error}", error = err);
                                 while let Some(msg) = self.socket_receiver.try_recv().ok() {
-                                    self.socket.sink.send(msg).await?;
+                                    self.socket.stream.send(msg).await?;
                                 }
-                                self.socket.sink.send(Message::Close(Some(CloseFrame {
+                                self.socket.stream.send(Message::Close(Some(CloseFrame {
                                     code: CloseCode::Error,
                                     reason: format!("{}", err),
                                 }))).await?;

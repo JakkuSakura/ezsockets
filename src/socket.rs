@@ -1,11 +1,11 @@
 use crate::config::WebsocketConfig;
 use crate::Error;
-use futures::stream::BoxStream;
-use futures::{SinkExt, StreamExt, TryStreamExt};
+use async_trait::async_trait;
+use futures::{SinkExt, StreamExt};
 use std::any::Any;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll};
 
 #[derive(Debug, Clone)]
 pub enum CloseCode {
@@ -161,90 +161,55 @@ where
     }
 }
 
-pub struct Sink {
-    sender: Pin<Box<dyn futures::Sink<Message, Error = Error> + Send + Sync>>,
+#[async_trait]
+pub trait SinkAndStream: Send {
+    async fn next(&mut self) -> Option<Result<Message, Error>>;
+    async fn send(&mut self, message: Message) -> Result<(), Error>;
 }
-
-impl Sink {
-    fn new<M, S>(sink: S) -> Self
-    where
-        M: From<Message> + std::fmt::Debug + Send + Sync + Unpin + 'static,
-        S: futures::Sink<M, Error = Error> + Unpin + Send + Sync + 'static,
-    {
-        Self {
-            sender: Box::pin(SinkImpl {
-                sink,
-                p: Default::default(),
-            }),
-        }
-    }
-    pub async fn send(&mut self, message: Message) -> Result<(), Error> {
-        self.sender.send(message).await
-    }
-}
-
-#[derive(Debug)]
-struct StreamImpl<S> {
-    stream: S,
-}
-impl<M, S> futures::Stream for StreamImpl<S>
-where
-    M: Into<Message>,
-    S: StreamExt<Item = Result<M, Error>> + Unpin,
+#[async_trait]
+impl<
+        T: futures::Sink<Message, Error = Error>
+            + futures::Stream<Item = Result<Message, Error>>
+            + Send
+            + Unpin,
+    > SinkAndStream for T
 {
-    type Item = Result<Message, Error>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let message = match ready!(self.stream.poll_next_unpin(cx)) {
-            Some(x) => x?.into(),
-            None => return Poll::Ready(None),
-        };
-        Poll::Ready(Some(Ok(message)))
+    async fn next(&mut self) -> Option<Result<Message, Error>> {
+        StreamExt::next(self).await
+    }
+    async fn send(&mut self, message: Message) -> Result<(), Error> {
+        SinkExt::send(self, message).await
     }
 }
-
-pub struct Stream {
-    stream_impl: BoxStream<'static, Result<Message, Error>>,
-}
-
-impl Stream {
-    fn new<M, S>(stream: S) -> Self
-    where
-        M: Into<Message> + std::fmt::Debug + Send + 'static,
-        S: StreamExt<Item = Result<M, Error>> + Unpin + Send + 'static,
-    {
-        let stream_impl = StreamImpl { stream };
-
-        Self {
-            stream_impl: stream_impl.boxed(),
+#[cfg(feature = "tungstenite")]
+#[async_trait]
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> SinkAndStream
+    for tokio_tungstenite::WebSocketStream<S>
+{
+    async fn next(&mut self) -> Option<Result<Message, Error>> {
+        let element = StreamExt::next(self).await?;
+        match element {
+            Ok(message) => Some(Ok(message.into())),
+            Err(err) => Some(Err(err.into())),
         }
     }
 
-    pub async fn recv(&mut self) -> Option<Result<Message, Error>> {
-        self.stream_impl.next().await
+    async fn send(&mut self, message: Message) -> Result<(), Error> {
+        SinkExt::send(self, message.into()).await?;
+        Ok(())
     }
 }
 
 pub struct Socket {
-    pub sink: Sink,
-    pub stream: Stream,
+    pub stream: Box<dyn SinkAndStream>,
     pub config: WebsocketConfig,
     pub(crate) disconnected: Option<tokio::sync::mpsc::UnboundedSender<Box<dyn Any + Send>>>,
 }
 
 impl Socket {
-    pub fn new<M, E: std::error::Error, S>(socket: S, config: WebsocketConfig) -> Self
-    where
-        M: Into<Message> + From<Message> + std::fmt::Debug + Send + Sync + Unpin + 'static,
-        E: Into<Error>,
-        S: SinkExt<M, Error = E> + Unpin + StreamExt<Item = Result<M, E>> + Unpin + Send + 'static,
-    {
-        let (sink, stream) = socket.sink_err_into().err_into().split();
-        let (sink, stream) = (Sink::new(sink), Stream::new(stream));
-
+    pub fn new<S: SinkAndStream + 'static>(socket: S, config: WebsocketConfig) -> Self {
         Self {
-            sink,
-            stream,
+            stream: Box::new(socket),
             config,
             disconnected: None,
         }

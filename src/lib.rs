@@ -12,9 +12,7 @@ mod socket;
 pub use socket::CloseCode;
 pub use socket::CloseFrame;
 pub use socket::Message;
-pub use socket::Sink;
 pub use socket::Socket;
-pub use socket::Stream;
 
 #[cfg(feature = "tokio-tungstenite")]
 pub mod tungstenite;
