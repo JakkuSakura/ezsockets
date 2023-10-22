@@ -5,8 +5,8 @@ use crate::Message;
 use crate::Socket;
 use crate::{CloseCode, CloseFrame};
 use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
 use std::fmt::Formatter;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -155,8 +155,7 @@ impl<E: SessionExt> SessionActor<E> {
                         break;
                     }
                     // Use chrono Utc::now()
-                    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                    let timestamp = timestamp.as_millis();
+                    let timestamp = Utc::now().timestamp_micros();
                     let bytes = timestamp.to_be_bytes();
                     self.socket.sink.send(Message::Ping(bytes.to_vec())).await?;
                 }
@@ -181,7 +180,15 @@ impl<E: SessionExt> SessionActor<E> {
                                 Message::Text(text) => self.extension.on_text(text).await,
                                 Message::Binary(bytes) => self.extension.on_binary(bytes).await,
                                 Message::Pong(_pong) => {
+                                    if let Ok(bytes) = _pong.try_into() {
+                                        let bytes: [u8; 8] = bytes;
+                                        let timestamp = i64::from_be_bytes(bytes);
+                                        let timestamp = Utc.timestamp_micros(timestamp).single().unwrap();
+                                        let latency = (Utc::now() - timestamp).num_milliseconds();
+                                        tracing::trace!("latency: {}ms", latency);
+                                    }
                                     last_alive = Instant::now();
+
                                     Ok(())
                                 }
                                 Message::Close(frame) => {

@@ -6,8 +6,6 @@ use std::any::Any;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
-use std::time::Instant;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub enum CloseCode {
@@ -188,7 +186,6 @@ impl Sink {
 #[derive(Debug)]
 struct StreamImpl<S> {
     stream: S,
-    last_alive: Instant,
 }
 impl<M, S> futures::Stream for StreamImpl<S>
 where
@@ -202,19 +199,6 @@ where
             Some(x) => x?.into(),
             None => return Poll::Ready(None),
         };
-        if let Message::Pong(bytes) = &message {
-            self.last_alive = Instant::now();
-            if let Ok(bytes) = bytes.clone().try_into() {
-                let bytes: [u8; 16] = bytes;
-                let timestamp = u128::from_be_bytes(bytes);
-                let timestamp = Duration::from_millis(timestamp as u64); // TODO: handle overflow
-                let latency = SystemTime::now()
-                    .duration_since(UNIX_EPOCH + timestamp)
-                    .unwrap();
-                // TODO: handle time zone
-                tracing::trace!("latency: {}ms", latency.as_millis());
-            }
-        }
         Poll::Ready(Some(Ok(message)))
     }
 }
@@ -229,10 +213,7 @@ impl Stream {
         M: Into<Message> + std::fmt::Debug + Send + 'static,
         S: StreamExt<Item = Result<M, Error>> + Unpin + Send + 'static,
     {
-        let stream_impl = StreamImpl {
-            stream,
-            last_alive: Instant::now(),
-        };
+        let stream_impl = StreamImpl { stream };
 
         Self {
             stream_impl: stream_impl.boxed(),
