@@ -12,6 +12,7 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 #[async_trait]
+#[allow(unused_variables)]
 pub trait SessionExt: Send {
     /// Custom identification number of SessionExt, usually a number or a string.
     type ID: Send + Sync + Clone + std::fmt::Debug + std::fmt::Display;
@@ -21,12 +22,25 @@ pub trait SessionExt: Send {
     /// Returns ID of the session.
     fn id(&self) -> &Self::ID;
     /// Handler for text messages from the client.
-    async fn on_text(&mut self, text: String) -> Result<(), Error>;
+    async fn on_text(&mut self, text: String) -> Result<(), Error> {
+        Ok(())
+    }
     /// Handler for binary messages from the client.
-    async fn on_binary(&mut self, bytes: Vec<u8>) -> Result<(), Error>;
+    async fn on_binary(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+        Ok(())
+    }
     /// Handler for custom calls from other parts from your program.
     /// This is useful for concurrency and polymorphism.
-    async fn on_call(&mut self, call: Self::Call) -> Result<(), Error>;
+    async fn on_call(&mut self, call: Self::Call) -> Result<(), Error> {
+        Ok(())
+    }
+    /// Handler for disconnection of the client.
+    async fn on_disconnect(
+        &mut self,
+        result: &Result<Option<CloseFrame>, Error>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub struct Session<I, C> {
@@ -140,6 +154,11 @@ pub(crate) struct SessionActor<E: SessionExt> {
 
 impl<E: SessionExt> SessionActor<E> {
     pub(crate) async fn run(mut self) -> Result<Option<CloseFrame>, Error> {
+        let ret = self.run_inner().await;
+        self.extension.on_disconnect(&ret).await?;
+        ret
+    }
+    pub(crate) async fn run_inner(&mut self) -> Result<Option<CloseFrame>, Error> {
         let mut interval = tokio::time::interval(self.socket.config.heartbeat);
         let mut last_alive = Instant::now();
         loop {
