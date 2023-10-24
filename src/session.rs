@@ -7,9 +7,9 @@ use crate::{CloseCode, CloseFrame};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use std::fmt::Formatter;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::time::Instant;
 
 #[async_trait]
 #[allow(unused_variables)]
@@ -89,6 +89,7 @@ impl<I: std::fmt::Display + Clone + Send + 'static, C: Send> Session<I, C> {
             socket_receiver,
             call_receiver,
             socket,
+            last_alive: Instant::now(),
         };
         tokio::spawn(async move {
             let tx = actor.socket.disconnected.clone().unwrap();
@@ -150,6 +151,7 @@ pub(crate) struct SessionActor<E: SessionExt> {
     socket_receiver: mpsc::Receiver<Message>,
     call_receiver: mpsc::Receiver<E::Call>,
     socket: Socket,
+    last_alive: Instant,
 }
 
 impl<E: SessionExt> SessionActor<E> {
@@ -158,25 +160,81 @@ impl<E: SessionExt> SessionActor<E> {
         self.extension.on_disconnect(&ret).await?;
         ret
     }
+
+    async fn handle_timeout_ping(&mut self) -> Result<bool, Error> {
+        if self.last_alive.elapsed() > self.socket.config.timeout {
+            tracing::info!("closing connection due to timeout");
+            self.socket
+                .stream
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Normal,
+                    reason: String::from("client didn't respond to Ping frame"),
+                })))
+                .await?;
+            return Ok(true);
+        }
+        let timestamp = Utc::now().timestamp_micros();
+        let bytes = timestamp.to_be_bytes();
+        self.socket
+            .stream
+            .send(Message::Ping(bytes.to_vec()))
+            .await?;
+        Ok(false)
+    }
+    async fn handle_send_message(&mut self, message: Message) -> Result<(), Error> {
+        self.socket.stream.send(message).await?;
+
+        Ok(())
+    }
+    async fn handle_recv_message(
+        &mut self,
+        message: Message,
+    ) -> Result<Option<Option<CloseFrame>>, Error> {
+        let result = match message {
+            Message::Text(text) => self.extension.on_text(text).await,
+            Message::Binary(bytes) => self.extension.on_binary(bytes).await,
+            Message::Pong(_pong) => {
+                if let Ok(bytes) = _pong.try_into() {
+                    let bytes: [u8; 8] = bytes;
+                    let timestamp = i64::from_be_bytes(bytes);
+                    let timestamp = Utc.timestamp_micros(timestamp).single().unwrap();
+                    let latency = (Utc::now() - timestamp).num_milliseconds();
+                    tracing::trace!("latency: {}ms", latency);
+                }
+                self.last_alive = Instant::now();
+
+                Ok(())
+            }
+            Message::Close(frame) => return Ok(Some(frame.map(CloseFrame::from))),
+            _ => Ok(()),
+        };
+        if let Err(err) = result {
+            tracing::error!(id = %self.id, "error while handling message: {error}", error = err);
+            while let Some(msg) = self.socket_receiver.try_recv().ok() {
+                self.socket.stream.send(msg).await?;
+            }
+            self.socket
+                .stream
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Error,
+                    reason: format!("{}", err),
+                })))
+                .await?;
+            return Err(err.into());
+        }
+        Ok(None)
+    }
+
     pub(crate) async fn run_inner(&mut self) -> Result<Option<CloseFrame>, Error> {
         let mut interval = tokio::time::interval(self.socket.config.heartbeat);
-        let mut last_alive = Instant::now();
+        self.last_alive = Instant::now();
         loop {
             tokio::select! {
                 biased;
                 _tick = interval.tick() => {
-                    if last_alive.elapsed() > self.socket.config.timeout {
-                        tracing::info!("closing connection due to timeout");
-                         self.socket.stream.send(Message::Close(Some(CloseFrame {
-                            code: CloseCode::Normal,
-                            reason: String::from("client didn't respond to Ping frame"),
-                        }))).await?;
+                    if self.handle_timeout_ping().await? {
                         break;
                     }
-                    // Use chrono Utc::now()
-                    let timestamp = Utc::now().timestamp_micros();
-                    let bytes = timestamp.to_be_bytes();
-                    self.socket.stream.send(Message::Ping(bytes.to_vec())).await?;
                 }
                 Some(message) = self.socket_receiver.recv() => {
                     let close = if let Message::Close(frame) = &message {
@@ -184,7 +242,7 @@ impl<E: SessionExt> SessionActor<E> {
                     } else {
                         None
                     };
-                    self.socket.stream.send(message.clone()).await?;
+                    self.handle_send_message(message).await?;
                     if let Some(frame) = close {
                         return frame
                     }
@@ -195,36 +253,8 @@ impl<E: SessionExt> SessionActor<E> {
                 message = self.socket.stream.next() => {
                     match message {
                         Some(Ok(message)) => {
-                            let result = match message {
-                                Message::Text(text) => self.extension.on_text(text).await,
-                                Message::Binary(bytes) => self.extension.on_binary(bytes).await,
-                                Message::Pong(_pong) => {
-                                    if let Ok(bytes) = _pong.try_into() {
-                                        let bytes: [u8; 8] = bytes;
-                                        let timestamp = i64::from_be_bytes(bytes);
-                                        let timestamp = Utc.timestamp_micros(timestamp).single().unwrap();
-                                        let latency = (Utc::now() - timestamp).num_milliseconds();
-                                        tracing::trace!("latency: {}ms", latency);
-                                    }
-                                    last_alive = Instant::now();
-
-                                    Ok(())
-                                }
-                                Message::Close(frame) => {
-                                    return Ok(frame.map(CloseFrame::from))
-                                },
-                                _ => Ok(())
-                            };
-                            if let Err(err) = result {
-                                tracing::error!(id = %self.id, "error while handling message: {error}", error = err);
-                                while let Some(msg) = self.socket_receiver.try_recv().ok() {
-                                    self.socket.stream.send(msg).await?;
-                                }
-                                self.socket.stream.send(Message::Close(Some(CloseFrame {
-                                    code: CloseCode::Error,
-                                    reason: format!("{}", err),
-                                }))).await?;
-                                return Err(err.into())
+                            if let Some(frame) = self.handle_recv_message(message).await? {
+                                return Ok(frame)
                             }
                         }
                         Some(Err(error)) => {
