@@ -104,10 +104,10 @@ pub trait ServerExt: Send {
     async fn on_call(&mut self, call: Self::Call) -> Result<(), Error>;
 }
 pub struct CreateServer<E: ServerExt> {
-    create_fn: Box<dyn FnOnce(Server<E>) -> E>,
+    create_fn: Box<dyn FnOnce(Server<E>) -> E + Send>,
 }
 impl<E: ServerExt + 'static> CreateServer<E> {
-    pub fn new(create_fn: impl FnOnce(Server<E>) -> E + 'static) -> Self {
+    pub fn new(create_fn: impl FnOnce(Server<E>) -> E + Send + 'static) -> Self {
         Self {
             create_fn: Box::new(create_fn),
         }

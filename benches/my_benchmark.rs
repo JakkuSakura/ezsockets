@@ -18,9 +18,9 @@ fn bench(b: &mut Bencher, client: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
         let nonce = rng.gen::<u32>();
         let text = format!("Hello {}", nonce);
         let message = tungstenite::Message::Text(text.clone());
-        client.write_message(message).unwrap();
+        client.send(message).unwrap();
 
-        while let tungstenite::Message::Text(received_text) = client.read_message().unwrap() {
+        while let tungstenite::Message::Text(received_text) = client.read().unwrap() {
             return Some(received_text);
         }
         return None;
@@ -31,7 +31,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     tracing_subscriber::fmt::init();
     let mut group = c.benchmark_group("read latency");
 
-    let port = 4321;
+    let port = 80;
     let thread = spawn(move || {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
         tungstenite_server::run(listener)
@@ -51,8 +51,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         .unwrap();
 
     let task = runtime.spawn(async move {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
-        ezsockets_server::run(listener).await;
+        ezsockets_server::run().await;
     });
     sleep(Duration::from_millis(1000));
     let mut client = tungstenite::connect(format!("ws://127.0.0.1:{}", port))

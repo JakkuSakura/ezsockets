@@ -25,7 +25,7 @@ impl ezsockets::ServerExt for EchoServer {
         config: &WebsocketConfig,
     ) -> Result<Session, Error> {
         let id = address.port();
-        let session = Session::create(|handle| EchoSession { id, handle }, id, socket, config);
+        let session = Session::create(id, socket, config, |handle| EchoSession { id, handle });
         Ok(session)
     }
 

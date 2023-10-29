@@ -69,10 +69,10 @@ impl<I: Clone, C> Clone for Session<I, C> {
 
 impl<I: std::fmt::Display + Clone + Send + 'static, C: Send> Session<I, C> {
     pub fn create<S: SessionExt<ID = I, Call = C> + 'static>(
-        session_fn: impl FnOnce(Session<I, C>) -> S,
         session_id: I,
         socket: Socket,
         config: &WebsocketConfig,
+        session_fn: impl FnOnce(Session<I, C>) -> S,
     ) -> Self {
         let (socket_sender, socket_receiver) = mpsc::channel(config.channel_size);
         let (call_sender, call_receiver) = mpsc::channel(config.channel_size);

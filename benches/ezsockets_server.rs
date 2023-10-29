@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use ezsockets::config::WebsocketConfig;
 use ezsockets::server::CreateServer;
 use ezsockets::tungstenite::Acceptor;
-use tokio::net::TcpListener;
 
 type SessionID = u16;
 type Session = ezsockets::Session<SessionID, ()>;
@@ -21,10 +20,10 @@ impl ezsockets::ServerExt for EchoServer {
         socket: ezsockets::Socket,
         _request: ezsockets::Request,
         address: SocketAddr,
-        _config: &WebsocketConfig,
+        config: &WebsocketConfig,
     ) -> Result<Session, ezsockets::Error> {
         let id = address.port();
-        let session = Session::create(|handle| EchoSession { id, handle }, id, socket);
+        let session = Session::create(id, socket, config, |handle| EchoSession { id, handle });
         Ok(session)
     }
 
@@ -56,7 +55,7 @@ impl ezsockets::SessionExt for EchoSession {
     }
 
     async fn on_text(&mut self, text: String) -> Result<(), ezsockets::Error> {
-        self.handle.text(text);
+        self.handle.text(text).await;
         Ok(())
     }
 
