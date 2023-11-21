@@ -230,7 +230,6 @@ impl<E: SessionExt> SessionActor<E> {
         self.last_alive = Instant::now();
         loop {
             tokio::select! {
-                biased;
                 _tick = interval.tick() => {
                     if self.handle_timeout_ping().await? {
                         break;
@@ -261,10 +260,12 @@ impl<E: SessionExt> SessionActor<E> {
                             tracing::error!(id = %self.id, "connection error: {error}");
                             return Err(error.into())
                         }
-                        None => break
+                        None => {
+                            tracing::debug!(id = %self.id, "connection closed");
+                            break
+                        }
                     };
                 }
-                else => break,
             }
         }
         Ok(None)
