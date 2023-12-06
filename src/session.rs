@@ -122,7 +122,13 @@ impl<I: std::fmt::Display + Clone, C> Session<I, C> {
             .await
             .unwrap_or_else(|_| tracing::warn!("Session::binary {PANIC_MESSAGE_UNHANDLED_CLOSE}"));
     }
-
+    /// Close the session
+    pub async fn close(&self, frame: Option<CloseFrame>) {
+        self.socket
+            .send(Message::Close(frame))
+            .await
+            .unwrap_or_else(|_| tracing::warn!("Session::close {PANIC_MESSAGE_UNHANDLED_CLOSE}"));
+    }
     /// Calls a method on the session
     pub async fn call(&self, call: C) {
         self.calls
